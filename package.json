@@ -1,5 +1,5 @@
 {
-  "name": "converge",
+  "name": "@jeremysnr/converge",
   "version": "0.1.0",
   "description": "Zero-dependency LLM message format conversion — OpenAI ↔ Anthropic ↔ Gemini",
   "keywords": ["llm", "openai", "anthropic", "gemini", "message-format", "conversion"],

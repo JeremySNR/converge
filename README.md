@@ -1,12 +1,12 @@
 # converge
 
-[![npm](https://img.shields.io/npm/v/converge)](https://www.npmjs.com/package/converge)
+[![npm](https://img.shields.io/npm/v/@jeremysnr/converge)](https://www.npmjs.com/package/@jeremysnr/converge)
 [![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Zero-dependency LLM message format conversion. Converts message arrays between OpenAI, Anthropic, and Google Gemini formats. Pure data transformation — no API calls, no authentication, no network.
 
 ```
-npm install converge
+npm install @jeremysnr/converge
 ```
 
 ## Usage
