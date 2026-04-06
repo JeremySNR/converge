@@ -1,31 +1,40 @@
 {
   "name": "@jeremysnr/converge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Zero-dependency LLM message format conversion — OpenAI ↔ Anthropic ↔ Gemini",
-  "keywords": ["llm", "openai", "anthropic", "gemini", "message-format", "conversion"],
+  "keywords": [
+    "llm",
+    "openai",
+    "anthropic",
+    "gemini",
+    "message-format",
+    "conversion"
+  ],
   "license": "MIT",
   "type": "module",
   "exports": {
     ".": {
-      "types":   "./dist/index.d.ts",
-      "import":  "./dist/index.js",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     }
   },
-  "main":  "./dist/index.cjs",
+  "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build":          "tsup src/index.ts --format cjs,esm --dts --clean --minify",
-    "build:check":    "tsup src/index.ts --format cjs,esm --dts --clean",
-    "test":           "tsx test/index.test.ts",
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean --minify",
+    "build:check": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "test": "tsx test/index.test.ts",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "tsup":        "^8.0.0",
-    "tsx":         "^4.0.0",
-    "typescript":  "^5.0.0"
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
   }
 }
