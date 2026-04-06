@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tsbuildinfo
+package-lock.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
