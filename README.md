@@ -3,7 +3,7 @@
 [![npm](https://img.shields.io/npm/v/@jeremysnr/converge)](https://www.npmjs.com/package/@jeremysnr/converge)
 [![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Zero-dependency LLM message format conversion. Converts message arrays between OpenAI, Anthropic, and Google Gemini formats. Pure data transformation — no API calls, no authentication, no network.
+Every LLM provider uses a different message format. This converts between them. No API calls, no auth, no network. JSON in, JSON out.
 
 ```
 npm install @jeremysnr/converge
@@ -12,7 +12,7 @@ npm install @jeremysnr/converge
 ## Usage
 
 ```ts
-import { fromOpenAI, toAnthropic, fromAnthropic, toOpenAI, fromGemini, toGemini } from 'converge'
+import { fromOpenAI, toAnthropic, fromAnthropic, toOpenAI, fromGemini, toGemini } from '@jeremysnr/converge'
 
 // OpenAI → Anthropic
 const canonical = fromOpenAI(openaiMessages)
@@ -29,7 +29,7 @@ const { system_instruction, contents } = toGemini(fromOpenAI(openaiMessages))
 const { system, messages } = toAnthropic(fromGemini({ system_instruction, contents }))
 ```
 
-All conversions pass through a canonical `Message[]` representation. You can inspect or modify it between conversions.
+All conversions go through a canonical `Message[]` in the middle. You can inspect or modify it between steps if you need to.
 
 ## Supported formats
 
@@ -52,14 +52,13 @@ interface Message {
 }
 
 type Part =
-  | { type: 'text';     text: string }
-  | { type: 'image';    mime_type: string; data: string; encoding: 'base64' | 'url' }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'text';  text: string }
+  | { type: 'image'; mime_type: string; data: string; encoding: 'base64' | 'url' }
 
 interface ToolCall {
   id:     string
   name:   string
-  args:   Record<string, unknown>   // always a parsed object
+  args:   Record<string, unknown>   // always a parsed object, never a JSON string
   index?: number
 }
 ```
@@ -68,66 +67,43 @@ interface ToolCall {
 
 ### `fromOpenAI(messages: unknown[]): Message[]`
 
-Converts an OpenAI `messages` array to canonical form. Handles:
-- `developer` role (normalised to `system`)
-- Deprecated `function` / `function_call` role and field
-- `image_url` with data URIs (`data:image/png;base64,...`) — split into `mime_type` + `data`
-- `tool_calls[].function.arguments` as a JSON string — parsed to an object
-- Tool message `name` resolved by scanning backwards to the matching `tool_calls` entry
+Converts an OpenAI `messages` array to canonical form. Handles the `developer` role (maps to `system`), the deprecated `function` / `function_call` fields, data URI splitting for `image_url`, JSON string parsing for `tool_calls[].function.arguments`, and backwards resolution of tool message names from the preceding assistant turn.
 
 ### `toOpenAI(messages: Message[]): unknown[]`
 
-Converts canonical messages to OpenAI format.
-- `tool_calls[].function.arguments` serialised back to a JSON string
-- Assistant messages with `tool_calls` get `content: null`
-- Image parts reconstructed as `data:mime;base64,...` data URIs
+Converts canonical messages to OpenAI format. Re-serialises `tool_calls[].function.arguments` to a JSON string, sets `content: null` on assistant messages that have tool calls, and reconstructs base64 images as data URIs.
 
 ### `fromAnthropic(input: AnthropicPayload | unknown[]): Message[]`
 
-Accepts either `{ system?, messages }` or a bare messages array.
-- `tool_result` blocks inside `user` messages are extracted as canonical `tool` role messages
-- `tool_use` blocks become `tool_calls` on the `assistant` message
-- `is_error` on `tool_result` preserved
+Accepts `{ system?, messages }` or a bare messages array. Extracts `tool_result` blocks from user messages into canonical `tool` role messages, maps `tool_use` blocks to `tool_calls`, and preserves `is_error`.
 
 ### `toAnthropic(messages: Message[]): AnthropicPayload`
 
-Returns `{ system?, messages }`.
-- `system` role messages concatenated into the top-level `system` string
-- Consecutive `tool` role messages folded into one `user` message with `tool_result` blocks
-- `tool_calls` serialised as `tool_use` blocks
+Returns `{ system?, messages }`. Concatenates `system` role messages into the top-level `system` string. Folds consecutive `tool` messages into a single user message with `tool_result` blocks, merging any following user message into the same turn to avoid consecutive user messages, which the Anthropic API rejects.
 
 ### `fromGemini(input: GeminiPayload | unknown[]): Message[]`
 
-Accepts either `{ system_instruction?, contents }` or a bare contents array.
-- `model` role normalised to `assistant`
-- `function_call` parts become `tool_calls`; `function_response` parts become `tool` role messages
+Accepts `{ system_instruction?, contents }` or a bare contents array. Maps the `model` role to `assistant`, converts `function_call` parts to `tool_calls`, and converts `function_response` parts to `tool` role messages.
 
 ### `toGemini(messages: Message[]): GeminiPayload`
 
-Returns `{ system_instruction?, contents }`.
-- `system` role extracted to `system_instruction`
-- Consecutive same-role contents merged (Gemini forbids consecutive same-role messages)
-- Consecutive `tool` messages folded into one `user` content with `function_response` parts
-- Empty content gets a `{ text: '' }` placeholder (Gemini requires at least one part)
+Returns `{ system_instruction?, contents }`. Merges consecutive same-role contents (Gemini rejects them), folds consecutive `tool` messages into a single user content with `function_response` parts, and injects a blank text part where needed (Gemini requires at least one part per content).
 
 ## Known lossy conversions
 
-| Conversion | What is lost |
+| What | What is lost |
 |---|---|
-| OpenAI `input_audio` parts | Dropped (no audio equivalent in Anthropic/Gemini canonical) |
+| OpenAI `input_audio` parts | Dropped, no audio equivalent in the other formats |
 | OpenAI `image_url.detail` | Dropped |
+| OpenAI `image_url` with a plain URL | `mime_type` degrades to `image/*`, cannot be derived from a URL |
+| OpenAI `refusal` on assistant messages | Dropped |
+| OpenAI `name` field when converting to Gemini | Dropped, Gemini has no participant name field |
 | Anthropic `cache_control` on blocks | Dropped |
 | Anthropic `document` blocks | Dropped |
 | Gemini `video_metadata`, `media_resolution` | Dropped |
-| OpenAI `refusal` field on assistant | Dropped |
-| OpenAI `name` on participant when converting to Gemini | Dropped (Gemini has no `name` field) |
-| Gemini `function_call` IDs | Synthesised as `name_index`; original IDs not preserved |
-| Mid-conversation `system` messages (OpenAI) | Multiple system messages concatenated into one when converting to Anthropic or Gemini |
+| Gemini `function_call` IDs | Synthesised on read, original IDs are not preserved |
+| Multiple `system` messages in OpenAI | Concatenated into one when converting to Anthropic or Gemini |
 
-## Runtime requirements
+## Requirements
 
-Node 18+, Deno, Bun, or any edge runtime with ES2020 support.
-
-## Zero runtime dependencies
-
-The package has no runtime dependencies. `devDependencies` are used only for building and testing.
+Node 18+, Deno, Bun, or any ES2020-capable runtime. No runtime dependencies.
