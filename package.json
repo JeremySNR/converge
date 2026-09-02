@@ -1,6 +1,6 @@
 {
   "name": "@jeremysnr/converge",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Zero-dependency LLM message format conversion — OpenAI ↔ Anthropic ↔ Gemini",
   "keywords": [
     "llm",
@@ -11,7 +11,20 @@
     "conversion"
   ],
   "license": "MIT",
+  "author": "Jeremy Smith",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JeremySNR/converge.git"
+  },
+  "homepage": "https://github.com/JeremySNR/converge#readme",
+  "bugs": {
+    "url": "https://github.com/JeremySNR/converge/issues"
+  },
   "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
