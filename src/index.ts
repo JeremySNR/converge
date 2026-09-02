@@ -208,11 +208,36 @@ export function toAnthropic(messages: Message[]): AnthropicPayload {
 
 // ─── Gemini ──────────────────────────────────────────────────────────────────
 
-export interface GeminiPayload { system_instruction?: { parts: unknown[] }; contents: unknown[] }
+/**
+ * Gemini payload. The REST API uses snake_case (`system_instruction`) while the
+ * official @google/genai JS SDK uses camelCase (`systemInstruction`). Both are
+ * accepted on input; `toGemini` emits one or the other depending on `casing`.
+ */
+export interface GeminiPayload {
+  system_instruction?: { parts: unknown[] }
+  systemInstruction?:  { parts: unknown[] }
+  contents: unknown[]
+}
+
+export type GeminiCasing = 'snake' | 'camel'
+export interface ToGeminiOptions { casing?: GeminiCasing }
+
+// Every Gemini key whose spelling differs between the REST API and the JS SDK.
+const GEMINI_KEYS = {
+  snake: { systemInstruction: 'system_instruction', inlineData: 'inline_data', fileData: 'file_data', functionCall: 'function_call', functionResponse: 'function_response', mimeType: 'mime_type', fileUri: 'file_uri' },
+  camel: { systemInstruction: 'systemInstruction',  inlineData: 'inlineData',  fileData: 'fileData',  functionCall: 'functionCall',  functionResponse: 'functionResponse',  mimeType: 'mimeType',  fileUri: 'fileUri'  },
+} as const
+type GeminiKey = keyof typeof GEMINI_KEYS.snake
+
+/** Read a Gemini field by its canonical name, accepting either casing on input. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function gget(o: Obj | undefined, key: GeminiKey): any {
+  return o?.[GEMINI_KEYS.snake[key]] ?? o?.[GEMINI_KEYS.camel[key]]
+}
 
 export function fromGemini(input: GeminiPayload | unknown[]): Message[] {
   const contents = Array.isArray(input) ? input : input.contents
-  const sys      = Array.isArray(input) ? undefined : input.system_instruction
+  const sys      = Array.isArray(input) ? undefined : gget(input as Obj, 'systemInstruction')
   const out: Message[] = []
   if (sys) {
     const text = (sys.parts as Obj[]).map(p => p.text as string).join('\n')
@@ -222,20 +247,19 @@ export function fromGemini(input: GeminiPayload | unknown[]): Message[] {
     const role: Role = c.role === 'model' ? 'assistant' : 'user'
     const parts: Part[] = []; const toolCalls: ToolCall[] = []; const toolResults: Message[] = []
     for (const p of c.parts as Obj[]) {
-      if ('text' in p && p.text !== '')          parts.push({ type: 'text', text: p.text })
-      else if ('inline_data' in p)               parts.push({ type: 'image', mime_type: p.inline_data.mime_type, data: p.inline_data.data, encoding: 'base64' })
-      else if ('file_data' in p)                 parts.push({ type: 'image', mime_type: p.file_data.mime_type, data: p.file_data.file_uri, encoding: 'url' })
-      else if ('function_call' in p) {
-        const fc: Obj = p.function_call
-        // Gemini may append thought-signature suffix to IDs — strip it
-        const id = String(fc.name).replace(/_\d+$/, '')
-        toolCalls.push({ id, name: fc.name, args: fc.args })
+      const inline = gget(p, 'inlineData'), file = gget(p, 'fileData')
+      const fc = gget(p, 'functionCall'),   fr   = gget(p, 'functionResponse')
+      if ('text' in p && p.text !== '') parts.push({ type: 'text', text: p.text })
+      else if (inline) parts.push({ type: 'image', mime_type: gget(inline, 'mimeType'), data: inline.data, encoding: 'base64' })
+      else if (file)   parts.push({ type: 'image', mime_type: gget(file, 'mimeType'),   data: gget(file, 'fileUri'), encoding: 'url' })
+      else if (fc) {
+        // Gemini 2.x carries an optional `id`; older payloads only have the name, so fall back to it
+        toolCalls.push({ id: fc.id ?? fc.name, name: fc.name, args: fc.args })
       }
-      else if ('function_response' in p) {
-        const fr: Obj = p.function_response
+      else if (fr) {
         // If the response was written by toGemini it has an `output` string key; otherwise serialise the whole object
         const text = typeof fr.response?.output === 'string' ? fr.response.output : JSON.stringify(fr.response)
-        toolResults.push({ role: 'tool', name: fr.name, tool_call_id: fr.name, content: [{ type: 'text', text }] })
+        toolResults.push({ role: 'tool', name: fr.name, tool_call_id: fr.id ?? fr.name, content: [{ type: 'text', text }] })
       }
     }
     out.push(...toolResults)
@@ -248,7 +272,8 @@ export function fromGemini(input: GeminiPayload | unknown[]): Message[] {
   return out
 }
 
-export function toGemini(messages: Message[]): GeminiPayload {
+export function toGemini(messages: Message[], options: ToGeminiOptions = {}): GeminiPayload {
+  const k = GEMINI_KEYS[options.casing ?? 'snake']
   let system_instruction: { parts: unknown[] } | undefined
   const contents: Obj[] = []
   let i = 0
@@ -265,7 +290,10 @@ export function toGemini(messages: Message[]): GeminiPayload {
       const parts: unknown[] = []
       while (i < messages.length && messages[i].role === 'tool') {
         const t = messages[i++]
-        parts.push({ function_response: { name: t.name ?? t.tool_call_id ?? '', response: { output: partsToText(t.content) } } })
+        const fr: Obj = { name: t.name ?? t.tool_call_id ?? '' }
+        if (t.tool_call_id) fr.id = t.tool_call_id
+        fr.response = { output: partsToText(t.content) }
+        parts.push({ [k.functionResponse]: fr })
       }
       // Merge into previous user content if possible, otherwise push new
       const last = contents[contents.length - 1]
@@ -276,9 +304,16 @@ export function toGemini(messages: Message[]): GeminiPayload {
     const gRole = m.role === 'assistant' ? 'model' : 'user'
     const parts: unknown[] = m.content.map(p => {
       if (p.type === 'text')  return { text: p.text }
-      return p.encoding === 'base64' ? { inline_data: { mime_type: p.mime_type, data: p.data } } : { file_data: { mime_type: p.mime_type, file_uri: p.data } }
+      return p.encoding === 'base64'
+        ? { [k.inlineData]: { [k.mimeType]: p.mime_type, data: p.data } }
+        : { [k.fileData]:   { [k.mimeType]: p.mime_type, [k.fileUri]: p.data } }
     })
-    if (m.tool_calls?.length) for (const tc of m.tool_calls) parts.push({ function_call: { name: tc.name, args: tc.args } })
+    if (m.tool_calls?.length) for (const tc of m.tool_calls) {
+      const fc: Obj = {}
+      if (tc.id) fc.id = tc.id
+      fc.name = tc.name; fc.args = tc.args
+      parts.push({ [k.functionCall]: fc })
+    }
     if (parts.length === 0) parts.push({ text: '' }) // Gemini requires at least one part
     // Merge consecutive same-role contents (Gemini forbids consecutive same role)
     const last = contents[contents.length - 1]
@@ -286,5 +321,7 @@ export function toGemini(messages: Message[]): GeminiPayload {
     else contents.push({ role: gRole, parts })
     i++
   }
-  return system_instruction ? { system_instruction, contents } : { contents }
+  const out: GeminiPayload = { contents }
+  if (system_instruction) (out as Obj)[k.systemInstruction] = system_instruction
+  return out
 }

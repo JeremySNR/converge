@@ -526,6 +526,126 @@ test('parallel tool calls full round-trip (OpenAI → Anthropic → OpenAI)', ()
   assert.equal(result[4].content, 'Done.')
 })
 
+// ─── Gemini casing and ids ───────────────────────────────────────────────────
+console.log('\nGemini casing and ids')
+
+test('fromGemini accepts camelCase systemInstruction, functionCall and functionResponse', () => {
+  const input = {
+    systemInstruction: { parts: [{ text: 'Be terse.' }] },
+    contents: [
+      { role: 'user',  parts: [{ text: 'Weather?' }] },
+      { role: 'model', parts: [{ functionCall: { id: 'fc_9', name: 'get_weather', args: { city: 'Leeds' } } }] },
+      { role: 'user',  parts: [{ functionResponse: { id: 'fc_9', name: 'get_weather', response: { output: 'Drizzle' } } }] },
+      { role: 'model', parts: [{ text: 'Drizzle in Leeds.' }] },
+    ],
+  }
+  const canon = fromGemini(input)
+  assert.equal(canon.length, 5)
+  assert.equal(canon[0].role, 'system')
+  if (canon[0].content[0].type === 'text') assert.equal(canon[0].content[0].text, 'Be terse.')
+  assert.equal(canon[2].role, 'assistant')
+  assert.deepEqual(canon[2].tool_calls, [{ id: 'fc_9', name: 'get_weather', args: { city: 'Leeds' } }])
+  assert.equal(canon[3].role, 'tool')
+  assert.equal(canon[3].tool_call_id, 'fc_9')
+  assert.equal(canon[3].name, 'get_weather')
+  if (canon[3].content[0].type === 'text') assert.equal(canon[3].content[0].text, 'Drizzle')
+  assert.equal(canon[4].role, 'assistant')
+})
+
+test('fromGemini accepts camelCase inlineData and fileData', () => {
+  const input = { contents: [{ role: 'user', parts: [
+    { inlineData: { mimeType: 'image/png', data: 'QUJD' } },
+    { fileData:   { mimeType: 'image/jpeg', fileUri: 'https://example.com/a.jpg' } },
+  ]}]}
+  const canon = fromGemini(input)
+  assert.deepEqual(canon[0].content, [
+    { type: 'image', mime_type: 'image/png',  data: 'QUJD',                      encoding: 'base64' },
+    { type: 'image', mime_type: 'image/jpeg', data: 'https://example.com/a.jpg', encoding: 'url' },
+  ])
+})
+
+test('fromGemini falls back to the function name as id when no id is present', () => {
+  const canon = fromGemini([
+    { role: 'model', parts: [{ function_call: { name: 'fn', args: {} } }] },
+    { role: 'user',  parts: [{ function_response: { name: 'fn', response: { output: 'ok' } } }] },
+  ])
+  assert.equal(canon[0].tool_calls![0].id, 'fn')
+  assert.equal(canon[1].tool_call_id, 'fn')
+})
+
+test('parallel calls to the same function keep distinct ids through OpenAI → Gemini → OpenAI', () => {
+  const original = [
+    { role: 'user', content: 'Weather in London and Paris?' },
+    { role: 'assistant', content: null, tool_calls: [
+      { id: 'call_A', type: 'function', function: { name: 'get_weather', arguments: '{"city":"London"}' } },
+      { id: 'call_B', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Paris"}' } },
+    ]},
+    { role: 'tool', tool_call_id: 'call_A', content: 'London: rain' },
+    { role: 'tool', tool_call_id: 'call_B', content: 'Paris: sun' },
+    { role: 'assistant', content: 'Rain in London, sun in Paris.' },
+  ]
+  const gem = toGemini(fromOpenAI(original))
+  const modelParts = (gem.contents[1] as { parts: { function_call: { id: string; name: string } }[] }).parts
+  assert.deepEqual(modelParts.map(p => p.function_call.id), ['call_A', 'call_B'])
+  const toolParts = (gem.contents[2] as { parts: { function_response: { id: string } }[] }).parts
+  assert.deepEqual(toolParts.map(p => p.function_response.id), ['call_A', 'call_B'])
+
+  const result = toOpenAI(fromGemini(gem)) as { role: string; content: string | null; tool_call_id?: string; tool_calls?: { id: string; function: { name: string; arguments: string } }[] }[]
+  assert.equal(result.length, 5)
+  assert.deepEqual(result[1].tool_calls!.map(t => t.id), ['call_A', 'call_B'])
+  assert.equal(JSON.parse(result[1].tool_calls![0].function.arguments).city, 'London')
+  assert.equal(JSON.parse(result[1].tool_calls![1].function.arguments).city, 'Paris')
+  assert.equal(result[2].tool_call_id, 'call_A'); assert.equal(result[2].content, 'London: rain')
+  assert.equal(result[3].tool_call_id, 'call_B'); assert.equal(result[3].content, 'Paris: sun')
+})
+
+test('toGemini with casing camel emits camelCase keys only', () => {
+  const canon: Message[] = [
+    { role: 'system',    content: [{ type: 'text', text: 'Sys' }] },
+    { role: 'user',      content: [
+      { type: 'image', mime_type: 'image/png',  data: 'QUJD', encoding: 'base64' },
+      { type: 'image', mime_type: 'image/jpeg', data: 'https://example.com/a.jpg', encoding: 'url' },
+    ]},
+    { role: 'assistant', content: [], tool_calls: [{ id: 'c1', name: 'fn', args: { a: 1 } }] },
+    { role: 'tool',      content: [{ type: 'text', text: 'done' }], tool_call_id: 'c1', name: 'fn' },
+  ]
+  const out = toGemini(canon, { casing: 'camel' })
+  assert.deepEqual(out, {
+    systemInstruction: { parts: [{ text: 'Sys' }] },
+    contents: [
+      { role: 'user',  parts: [
+        { inlineData: { mimeType: 'image/png', data: 'QUJD' } },
+        { fileData:   { mimeType: 'image/jpeg', fileUri: 'https://example.com/a.jpg' } },
+      ]},
+      { role: 'model', parts: [{ functionCall: { id: 'c1', name: 'fn', args: { a: 1 } } }] },
+      { role: 'user',  parts: [{ functionResponse: { id: 'c1', name: 'fn', response: { output: 'done' } } }] },
+    ],
+  })
+  assert.equal(JSON.stringify(out).includes('_'), false)
+  // Default stays snake_case for backwards compatibility
+  const snake = toGemini(canon)
+  assert.ok('system_instruction' in snake)
+  assert.equal(JSON.stringify(snake).includes('inlineData'), false)
+})
+
+test('Gemini camelCase → canonical → Gemini camelCase is a faithful round-trip', () => {
+  const original = {
+    systemInstruction: { parts: [{ text: 'Be brief.' }] },
+    contents: [
+      { role: 'user',  parts: [
+        { text: 'Look at this' },
+        { inlineData: { mimeType: 'image/png', data: 'QUJD' } },
+        { fileData:   { mimeType: 'image/jpeg', fileUri: 'https://example.com/cat.jpg' } },
+      ]},
+      { role: 'model', parts: [{ functionCall: { id: 'fc_1', name: 'describe', args: { detail: 'high' } } }] },
+      { role: 'user',  parts: [{ functionResponse: { id: 'fc_1', name: 'describe', response: { output: 'A cat' } } }] },
+      { role: 'model', parts: [{ text: 'It is a cat.' }] },
+    ],
+  }
+  const back = toGemini(fromGemini(original), { casing: 'camel' })
+  assert.deepEqual(back, original)
+})
+
 // ─── Results ──────────────────────────────────────────────────────────────────
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed\n`)
 if (failed > 0) process.exit(1)
